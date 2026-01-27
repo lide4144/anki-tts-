@@ -27,13 +27,14 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 VOICE = "en-US-ChristopherNeural"  # Edge-TTS 语音
 INPUT_FILE = Path("输入文本.md")  # 输入文本文件
+QUESTION_FILE = Path("问题本身.md")  # 雅思题目文件
 OUTPUT_DIR = Path("output")  # 输出目录
 TEMP_AUDIO_DIR = OUTPUT_DIR / "temp_audio"  # 临时音频文件目录
-OUTPUT_APKG = OUTPUT_DIR / "IELTS_Speaking_LiHua.apkg"
+# OUTPUT_APKG 将根据题目动态生成
 
 # Anki Model ID (随机生成的唯一ID)
 MODEL_ID = 1607392319
-DECK_ID = 2059400110
+# DECK_ID 将根据题目动态生成（使用题目哈希值确保唯一性）
 
 
 # ============= 读取输入文本 =============
@@ -66,16 +67,75 @@ def load_input_text() -> str:
         sys.exit(1)
 
 
+def load_question() -> str:
+    """
+    从题目文件读取雅思 Part 2 题目
+    
+    Returns:
+        题目内容字符串
+    """
+    try:
+        if not QUESTION_FILE.exists():
+            print(f"⚠️  警告: 找不到题目文件 '{QUESTION_FILE}'")
+            print(f"  将使用默认题目格式")
+            return ""
+        
+        with open(QUESTION_FILE, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+        
+        print(f"✓ 成功读取题目文件: {QUESTION_FILE}")
+        return content
+        
+    except Exception as e:
+        print(f"⚠️  警告: 读取题目文件失败: {e}")
+        return ""
+
+
+def sanitize_filename(text: str) -> str:
+    """
+    清理文本使其适合作为文件名
+    
+    Args:
+        text: 原始文本
+        
+    Returns:
+        清理后的文件名
+    """
+    # 获取第一行
+    first_line = text.split('\n')[0].strip()
+    
+    # 移除或替换非法字符
+    # Windows 文件名不允许的字符: < > : " / \ | ? *
+    illegal_chars = '<>:"/\\|?*'
+    for char in illegal_chars:
+        first_line = first_line.replace(char, '')
+    
+    # 移除多余的空格
+    first_line = ' '.join(first_line.split())
+    
+    # 限制长度（避免文件名过长）
+    max_length = 100
+    if len(first_line) > max_length:
+        first_line = first_line[:max_length].strip()
+    
+    # 如果清理后为空，使用默认名称
+    if not first_line:
+        first_line = "IELTS_Speaking"
+    
+    return first_line
+
+
 # ============= AI 拆解函数 =============
-def parse_text_with_ai(text: str) -> tuple[List[Dict[str, str]], str]:
+def parse_text_with_ai(text: str, question: str) -> tuple[List[Dict[str, str]], str]:
     """
     使用 DeepSeek API 将文本拆解为句子，并生成中文翻译和关键词提示
     
     Args:
         text: 原始英文文本
+        question: 雅思 Part 2 题目
         
     Returns:
-        (句子列表, 故事大纲) 的元组
+        (句子列表, 1分钟笔记) 的元组
     """
     # 检查 API Key
     if not DEEPSEEK_API_KEY:
@@ -129,43 +189,61 @@ def parse_text_with_ai(text: str) -> tuple[List[Dict[str, str]], str]:
         
         print(f"✓ 成功解析 {len(data)} 个句子")
         
-        # 第二次调用：生成故事大纲
-        print("📋 生成故事结构大纲...")
-        outline_prompt = f"""
-请为以下雅思口语 Part 2 回答生成一个清晰的故事结构大纲。
+        # 第二次调用：生成1分钟笔记
+        print("📋 生成1分钟准备笔记...")
+        
+        if question:
+            notes_prompt = f"""
+你是一个雅思口语教学助手。考生在雅思口语 Part 2 有1分钟的准备时间，需要在题目卡上快速写下关键词笔记。
 
-这个大纲将帮助考生记住：
-1. 故事的整体发展顺序
-2. 每个部分的主要内容
-3. 如何串联起所有句子
+请根据以下题目和回答内容，生成一个简洁的关键词笔记，要求：
+1. 按照题目的要点顺序组织（Who, How often, How/why, How feel）
+2. 每个要点下只写2-4个关键词
+3. 使用简写、符号，能在1分钟内快速写下
+4. 帮助考生按正确顺序串联句子
 
-请用中文生成一个简洁的大纲，包含3-5个主要部分，每个部分用一句话概括。
+题目：
+{question}
 
-原文本：
+回答内容：
 {text}
 
-请直接返回大纲文本，不要包含任何其他说明。格式如下：
+请直接返回笔记内容，格式如下：
 
-第一部分：人物介绍
-- 介绍李华的基本信息和背景
+Who: cousin Li Hua, software engineer, Shenzhen
+How often: every week, community center
+How/why: teach elderly, smartphones, developed app
+How feel: proud, inspired, help classmates
+"""
+        else:
+            notes_prompt = f"""
+你是一个雅思口语教学助手。考生在雅思口语 Part 2 有1分钟的准备时间，需要快速写下关键词笔记。
 
-第二部分：...
-- ...
+请根据以下回答内容，生成一个简洁的关键词笔记，要求：
+1. 按照故事发展顺序组织
+2. 每个部分只写2-4个关键词
+3. 使用简写、符号，能在1分钟内快速写下
+4. 帮助考生按正确顺序串联句子
+
+回答内容：
+{text}
+
+请直接返回笔记内容。
 """
         
-        outline_response = client.chat.completions.create(
+        notes_response = client.chat.completions.create(
             model="deepseek-chat",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": outline_prompt}
+                {"role": "user", "content": notes_prompt}
             ],
             temperature=0.3
         )
         
-        outline = outline_response.choices[0].message.content.strip()
-        print(f"✓ 成功生成故事大纲")
+        notes = notes_response.choices[0].message.content.strip()
+        print(f"✓ 成功生成1分钟笔记")
         
-        return data, outline
+        return data, notes
         
     except json.JSONDecodeError as e:
         print(f"✗ JSON 解析失败: {e}")
@@ -222,14 +300,17 @@ async def generate_all_audio(sentences: List[Dict[str, str]]) -> List[Path]:
 
 
 # ============= Anki 卡片生成 =============
-def create_anki_deck(sentences: List[Dict[str, str]], audio_files: List[Path], story_outline: str) -> str:
+def create_anki_deck(sentences: List[Dict[str, str]], audio_files: List[Path], one_minute_notes: str, question: str, output_filename: str, deck_name: str) -> str:
     """
     创建 Anki 卡片包
     
     Args:
         sentences: 句子数据列表
         audio_files: 音频文件路径列表
-        story_outline: 故事结构大纲
+        one_minute_notes: 1分钟准备笔记
+        question: 雅思题目内容
+        output_filename: 输出文件名
+        deck_name: 牌组名称
         
     Returns:
         生成的 .apkg 文件路径
@@ -281,37 +362,38 @@ def create_anki_deck(sentences: List[Dict[str, str]], audio_files: List[Path], s
         '''
     )
     
-    # 定义故事总览卡片模板（使用不同的 Model ID）
-    overview_model = genanki.Model(
+    # 定义1分钟笔记卡片模板（使用不同的 Model ID）
+    notes_model = genanki.Model(
         MODEL_ID + 1,
-        'IELTS Speaking Overview Model',
+        'IELTS Speaking Notes Model',
         fields=[
             {'name': 'Title'},
-            {'name': 'Outline'},
+            {'name': 'Notes'},
         ],
         templates=[
             {
-                'name': 'Overview Card',
+                'name': 'Notes Card',
                 'qfmt': '''
-                    <div style="font-family: Arial; text-align: center; padding: 30px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 10px; margin: 20px;">
-                        <h1 style="font-size: 32px; margin: 0;">{{Title}}</h1>
-                        <p style="font-size: 16px; margin-top: 10px; opacity: 0.9;">Part 2 完整回答 - 故事结构提示</p>
+                    <div style="font-family: Arial; text-align: center; padding: 30px; background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; border-radius: 10px; margin: 20px;">
+                        <h1 style="font-size: 32px; margin: 0;">⏱️ {{Title}}</h1>
+                        <p style="font-size: 16px; margin-top: 10px; opacity: 0.9;">Part 2 准备时间笔记</p>
                     </div>
                     <div style="text-align: center; margin-top: 20px; padding: 20px;">
-                        <p style="font-size: 18px; color: #555;">🤔 回忆一下，这个故事是怎么展开的？</p>
+                        <p style="font-size: 18px; color: #555;">🤔 如果现在是考试，你会在题目卡上写什么？</p>
+                        <p style="font-size: 14px; color: #999; margin-top: 10px;">（你有1分钟时间准备）</p>
                     </div>
                 ''',
                 'afmt': '''
-                    <div style="font-family: Arial; text-align: center; padding: 30px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 10px; margin: 20px;">
-                        <h1 style="font-size: 32px; margin: 0;">{{Title}}</h1>
-                        <p style="font-size: 16px; margin-top: 10px; opacity: 0.9;">Part 2 完整回答 - 故事结构提示</p>
+                    <div style="font-family: Arial; text-align: center; padding: 30px; background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; border-radius: 10px; margin: 20px;">
+                        <h1 style="font-size: 32px; margin: 0;">⏱️ {{Title}}</h1>
+                        <p style="font-size: 16px; margin-top: 10px; opacity: 0.9;">Part 2 准备时间笔记</p>
                     </div>
-                    <div style="background-color: #f8f9fa; padding: 25px; margin: 20px; border-radius: 10px; border-left: 5px solid #667eea;">
-                        <div style="font-size: 16px; line-height: 1.8; color: #333; text-align: left; white-space: pre-wrap;">{{Outline}}</div>
+                    <div style="background-color: #fffbf0; padding: 30px; margin: 20px; border-radius: 10px; border: 2px dashed #ffa500; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                        <div style="font-size: 18px; line-height: 2; color: #333; text-align: left; font-family: 'Courier New', monospace; white-space: pre-wrap;">{{Notes}}</div>
                     </div>
-                    <div style="text-align: center; margin-top: 20px; padding: 15px; background-color: #fff3cd; border-radius: 5px;">
-                        <p style="font-size: 14px; color: #856404; margin: 0;">
-                            💡 <strong>提示：</strong>按照这个结构，串联起你学过的所有句子，完成 Part 2 的完整回答！
+                    <div style="text-align: center; margin-top: 20px; padding: 15px; background-color: #e7f3ff; border-radius: 5px; border-left: 4px solid #2196F3;">
+                        <p style="font-size: 14px; color: #1565c0; margin: 0;">
+                            ✏️ <strong>考试技巧：</strong>在1分钟准备时间内，快速写下这些关键词，帮助你按顺序串联句子！
                         </p>
                     </div>
                 ''',
@@ -327,7 +409,12 @@ def create_anki_deck(sentences: List[Dict[str, str]], audio_files: List[Path], s
     )
     
     # 创建 Deck
-    deck = genanki.Deck(DECK_ID, 'IELTS Speaking - Li Hua Story')
+    # 使用题目内容生成唯一的 Deck ID（通过哈希）
+    deck_id = hash(deck_name) % (10 ** 10)  # 生成一个10位数的ID
+    if deck_id < 0:
+        deck_id = abs(deck_id)
+    
+    deck = genanki.Deck(deck_id, deck_name)
     
     # 创建 Package
     package = genanki.Package(deck)
@@ -353,25 +440,28 @@ def create_anki_deck(sentences: List[Dict[str, str]], audio_files: List[Path], s
         
         print(f"  ✓ 添加句子卡片 {idx + 1}/{len(sentences)}")
     
-    # 添加故事总览卡片
-    overview_note = genanki.Note(
-        model=overview_model,
+    # 添加1分钟笔记卡片
+    # 如果有题目内容，使用题目作为标题；否则使用默认标题
+    card_title = question if question else '1分钟笔记'
+    notes_card = genanki.Note(
+        model=notes_model,
         fields=[
-            '📚 故事结构总览',
-            story_outline
+            card_title,
+            one_minute_notes
         ]
     )
-    deck.add_note(overview_note)
-    print(f"  ✓ 添加故事总览卡片")
+    deck.add_note(notes_card)
+    print(f"  ✓ 添加1分钟笔记卡片")
     
     # 导出 .apkg 文件
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    package.write_to_file(str(OUTPUT_APKG))
-    print(f"\n✓ 成功生成 Anki 包: {OUTPUT_APKG}")
+    output_path = OUTPUT_DIR / f"{output_filename}.apkg"
+    package.write_to_file(str(output_path))
+    print(f"\n✓ 成功生成 Anki 包: {output_path}")
     print(f"  - {len(sentences)} 张句子卡片")
-    print(f"  - 1 张故事总览卡片")
+    print(f"  - 1 张1分钟笔记卡片")
     
-    return str(OUTPUT_APKG)
+    return str(output_path)
 
 
 # ============= 清理临时文件 =============
@@ -400,23 +490,38 @@ async def main():
     print()
     
     try:
-        # Step 0: 读取输入文本
-        print("📄 Step 0: 读取输入文本...")
+        # Step 0: 读取输入文件
+        print("📄 Step 0: 读取输入文件...")
         raw_text = load_input_text()
+        question = load_question()
         print()
         
-        # Step 1: 调用 AI 拆解文本并生成故事大纲
+        # Step 1: 调用 AI 拆解文本并生成1分钟笔记
         print("📝 Step 1: 使用 DeepSeek API 拆解文本...")
-        sentences, story_outline = parse_text_with_ai(raw_text)
+        sentences, one_minute_notes = parse_text_with_ai(raw_text, question)
         print()
         
         # Step 2: 生成音频文件
         print("🔊 Step 2: 使用 Edge-TTS 生成语音文件...")
         audio_files = await generate_all_audio(sentences)
         
-        # Step 3: 创建 Anki 卡片包
-        print("📦 Step 3: 生成 Anki 卡片包...")
-        apkg_file = create_anki_deck(sentences, audio_files, story_outline)
+        # Step 3: 生成输出文件名和牌组名称
+        if question:
+            # 获取题目第一行作为名称
+            question_first_line = question.split('\n')[0].strip()
+            output_filename = sanitize_filename(question)
+            deck_name = question_first_line
+            print(f"📝 输出文件名: {output_filename}.apkg")
+            print(f"📚 牌组名称: {deck_name}")
+        else:
+            output_filename = "IELTS_Speaking"
+            deck_name = "IELTS Speaking"
+            print(f"📝 使用默认文件名: {output_filename}.apkg")
+            print(f"📚 使用默认牌组名称: {deck_name}")
+        
+        # Step 4: 创建 Anki 卡片包
+        print("📦 Step 4: 生成 Anki 卡片包...")
+        apkg_file = create_anki_deck(sentences, audio_files, one_minute_notes, question, output_filename, deck_name)
         
         print()
         print("=" * 60)
@@ -432,7 +537,7 @@ async def main():
         raise
     
     finally:
-        # Step 4: 清理临时文件
+        # Step 5: 清理临时文件
         print()
         print("🧹 清理临时文件...")
         cleanup_temp_files()
