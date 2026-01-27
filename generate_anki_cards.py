@@ -67,7 +67,7 @@ def load_input_text() -> str:
 
 
 # ============= AI 拆解函数 =============
-def parse_text_with_ai(text: str) -> List[Dict[str, str]]:
+def parse_text_with_ai(text: str) -> tuple[List[Dict[str, str]], str]:
     """
     使用 DeepSeek API 将文本拆解为句子，并生成中文翻译和关键词提示
     
@@ -75,7 +75,7 @@ def parse_text_with_ai(text: str) -> List[Dict[str, str]]:
         text: 原始英文文本
         
     Returns:
-        包含 english, chinese, keywords 的字典列表
+        (句子列表, 故事大纲) 的元组
     """
     # 检查 API Key
     if not DEEPSEEK_API_KEY:
@@ -107,6 +107,7 @@ def parse_text_with_ai(text: str) -> List[Dict[str, str]]:
 """
     
     try:
+        # 第一次调用：拆解句子
         response = client.chat.completions.create(
             model="deepseek-chat",
             messages=[
@@ -127,7 +128,44 @@ def parse_text_with_ai(text: str) -> List[Dict[str, str]]:
         data = json.loads(content)
         
         print(f"✓ 成功解析 {len(data)} 个句子")
-        return data
+        
+        # 第二次调用：生成故事大纲
+        print("📋 生成故事结构大纲...")
+        outline_prompt = f"""
+请为以下雅思口语 Part 2 回答生成一个清晰的故事结构大纲。
+
+这个大纲将帮助考生记住：
+1. 故事的整体发展顺序
+2. 每个部分的主要内容
+3. 如何串联起所有句子
+
+请用中文生成一个简洁的大纲，包含3-5个主要部分，每个部分用一句话概括。
+
+原文本：
+{text}
+
+请直接返回大纲文本，不要包含任何其他说明。格式如下：
+
+第一部分：人物介绍
+- 介绍李华的基本信息和背景
+
+第二部分：...
+- ...
+"""
+        
+        outline_response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": outline_prompt}
+            ],
+            temperature=0.3
+        )
+        
+        outline = outline_response.choices[0].message.content.strip()
+        print(f"✓ 成功生成故事大纲")
+        
+        return data, outline
         
     except json.JSONDecodeError as e:
         print(f"✗ JSON 解析失败: {e}")
@@ -184,18 +222,19 @@ async def generate_all_audio(sentences: List[Dict[str, str]]) -> List[Path]:
 
 
 # ============= Anki 卡片生成 =============
-def create_anki_deck(sentences: List[Dict[str, str]], audio_files: List[Path]) -> str:
+def create_anki_deck(sentences: List[Dict[str, str]], audio_files: List[Path], story_outline: str) -> str:
     """
     创建 Anki 卡片包
     
     Args:
         sentences: 句子数据列表
         audio_files: 音频文件路径列表
+        story_outline: 故事结构大纲
         
     Returns:
         生成的 .apkg 文件路径
     """
-    # 定义卡片模板
+    # 定义普通句子卡片模板
     model = genanki.Model(
         MODEL_ID,
         'IELTS Speaking Model',
@@ -242,6 +281,51 @@ def create_anki_deck(sentences: List[Dict[str, str]], audio_files: List[Path]) -
         '''
     )
     
+    # 定义故事总览卡片模板（使用不同的 Model ID）
+    overview_model = genanki.Model(
+        MODEL_ID + 1,
+        'IELTS Speaking Overview Model',
+        fields=[
+            {'name': 'Title'},
+            {'name': 'Outline'},
+        ],
+        templates=[
+            {
+                'name': 'Overview Card',
+                'qfmt': '''
+                    <div style="font-family: Arial; text-align: center; padding: 30px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 10px; margin: 20px;">
+                        <h1 style="font-size: 32px; margin: 0;">{{Title}}</h1>
+                        <p style="font-size: 16px; margin-top: 10px; opacity: 0.9;">Part 2 完整回答 - 故事结构提示</p>
+                    </div>
+                    <div style="text-align: center; margin-top: 20px; padding: 20px;">
+                        <p style="font-size: 18px; color: #555;">🤔 回忆一下，这个故事是怎么展开的？</p>
+                    </div>
+                ''',
+                'afmt': '''
+                    <div style="font-family: Arial; text-align: center; padding: 30px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 10px; margin: 20px;">
+                        <h1 style="font-size: 32px; margin: 0;">{{Title}}</h1>
+                        <p style="font-size: 16px; margin-top: 10px; opacity: 0.9;">Part 2 完整回答 - 故事结构提示</p>
+                    </div>
+                    <div style="background-color: #f8f9fa; padding: 25px; margin: 20px; border-radius: 10px; border-left: 5px solid #667eea;">
+                        <div style="font-size: 16px; line-height: 1.8; color: #333; text-align: left; white-space: pre-wrap;">{{Outline}}</div>
+                    </div>
+                    <div style="text-align: center; margin-top: 20px; padding: 15px; background-color: #fff3cd; border-radius: 5px;">
+                        <p style="font-size: 14px; color: #856404; margin: 0;">
+                            💡 <strong>提示：</strong>按照这个结构，串联起你学过的所有句子，完成 Part 2 的完整回答！
+                        </p>
+                    </div>
+                ''',
+            },
+        ],
+        css='''
+            .card {
+                font-family: Arial, sans-serif;
+                background-color: #ffffff;
+                padding: 20px;
+            }
+        '''
+    )
+    
     # 创建 Deck
     deck = genanki.Deck(DECK_ID, 'IELTS Speaking - Li Hua Story')
     
@@ -249,6 +333,8 @@ def create_anki_deck(sentences: List[Dict[str, str]], audio_files: List[Path]) -
     package = genanki.Package(deck)
     
     print("开始创建 Anki 卡片...")
+    
+    # 添加普通句子卡片
     for idx, (sentence, audio_file) in enumerate(zip(sentences, audio_files)):
         # 创建 Note
         note = genanki.Note(
@@ -265,12 +351,25 @@ def create_anki_deck(sentences: List[Dict[str, str]], audio_files: List[Path]) -
         # 添加音频文件到 Package
         package.media_files.append(str(audio_file))
         
-        print(f"  ✓ 添加卡片 {idx + 1}/{len(sentences)}")
+        print(f"  ✓ 添加句子卡片 {idx + 1}/{len(sentences)}")
+    
+    # 添加故事总览卡片
+    overview_note = genanki.Note(
+        model=overview_model,
+        fields=[
+            '📚 故事结构总览',
+            story_outline
+        ]
+    )
+    deck.add_note(overview_note)
+    print(f"  ✓ 添加故事总览卡片")
     
     # 导出 .apkg 文件
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     package.write_to_file(str(OUTPUT_APKG))
     print(f"\n✓ 成功生成 Anki 包: {OUTPUT_APKG}")
+    print(f"  - {len(sentences)} 张句子卡片")
+    print(f"  - 1 张故事总览卡片")
     
     return str(OUTPUT_APKG)
 
@@ -306,9 +405,9 @@ async def main():
         raw_text = load_input_text()
         print()
         
-        # Step 1: 调用 AI 拆解文本
+        # Step 1: 调用 AI 拆解文本并生成故事大纲
         print("📝 Step 1: 使用 DeepSeek API 拆解文本...")
-        sentences = parse_text_with_ai(raw_text)
+        sentences, story_outline = parse_text_with_ai(raw_text)
         print()
         
         # Step 2: 生成音频文件
@@ -317,7 +416,7 @@ async def main():
         
         # Step 3: 创建 Anki 卡片包
         print("📦 Step 3: 生成 Anki 卡片包...")
-        apkg_file = create_anki_deck(sentences, audio_files)
+        apkg_file = create_anki_deck(sentences, audio_files, story_outline)
         
         print()
         print("=" * 60)
